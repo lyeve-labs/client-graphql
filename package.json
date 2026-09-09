@@ -1,6 +1,6 @@
 {
   "name": "@lyeve-labs/client-graphql",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "GraphQL client for LyEve Core - queries, mutations, and subscriptions over WebSocket",
   "license": "MIT",
   "author": "LyEve <info@lyeve.com>",
