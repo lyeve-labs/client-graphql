@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The README examples use the schema the server generates. There is no
+  `schemas` root field and no `createSchema` mutation: each content schema gets
+  its own list and single-record queries and `create`, `update` and `delete`
+  mutations, and the `contentChanged` payload field is `recordId`, not
+  `record_id`. The README documents the `token` option subscriptions need and
+  says that `baseUrl` is an origin prefix, not an endpoint override. The Node
+  floor reads 24.
+
 ## [0.1.8] - 2026-09-12
 
 ### Fixed
