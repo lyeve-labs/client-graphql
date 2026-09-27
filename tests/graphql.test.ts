@@ -85,7 +85,7 @@ describe("GraphQLClient", () => {
 
       expect(result.data).toEqual({ ping: true });
 
-      // variables: undefined is passed through; JSON.stringify strips it
+      // variables: undefined is passed through, and JSON.stringify strips it
       const [_, init] = fetchFn.mock.calls[0];
       const body = JSON.parse(init.body as string);
       expect(body.query).toBe("{ ping }");
