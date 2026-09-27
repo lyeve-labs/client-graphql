@@ -1,4 +1,4 @@
-// GraphQL client for LyEve CMS - queries, mutations, and subscriptions.
+// GraphQL client for LyEve CMS: queries, mutations, and subscriptions.
 
 export { createGraphQLClient, GraphQLClient } from "./client.js";
 export type {
