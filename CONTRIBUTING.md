@@ -3,8 +3,8 @@
 ## Quick start
 
 ```bash
-git clone git@github.com:lyeve-labs/cms-client-graphql.git
-cd cms-client-graphql
+git clone https://github.com/lyeve-labs/client-graphql.git
+cd client-graphql
 pnpm install
 pnpm test         # verify everything works
 ```

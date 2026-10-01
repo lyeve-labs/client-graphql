@@ -85,7 +85,7 @@ describe("GraphQLClient", () => {
 
       expect(result.data).toEqual({ ping: true });
 
-      // variables: undefined is passed through; JSON.stringify strips it
+      // variables: undefined is passed through, and JSON.stringify strips it
       const [_, init] = fetchFn.mock.calls[0];
       const body = JSON.parse(init.body as string);
       expect(body.query).toBe("{ ping }");
@@ -227,7 +227,7 @@ describe("GraphQLClient", () => {
     });
   });
 
-  // subscribe() - WebSocket graphql-ws protocol
+  // subscribe(): WebSocket graphql-ws protocol
 
   describe("subscribe()", () => {
     let originalWS: typeof WebSocket;
@@ -494,7 +494,7 @@ describe("GraphQLClient", () => {
       ws.triggerOpen();
       ws.triggerMessage({ type: "connection_ack" });
 
-      // Message with wrong id - should be ignored
+      // Message with wrong id: should be ignored
       ws.triggerMessage({
         id: "wrong-id",
         type: "next",
