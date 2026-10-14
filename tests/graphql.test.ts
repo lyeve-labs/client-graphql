@@ -239,6 +239,7 @@ describe("GraphQLClient", () => {
       triggerOpen: () => void;
       triggerMessage: (data: unknown) => void;
       triggerError: () => void;
+      triggerClose: (code: number, reason?: string) => void;
     }> = [];
 
     beforeEach(() => {
@@ -305,6 +306,8 @@ describe("GraphQLClient", () => {
               new MessageEvent("message", { data: JSON.stringify(data) }),
             ),
           triggerError: () => onerror?.(new Event("error")),
+          triggerClose: (code: number, reason = "") =>
+            onclose?.(new CloseEvent("close", { code, reason })),
         });
 
         return this;
@@ -313,12 +316,17 @@ describe("GraphQLClient", () => {
 
     afterEach(() => {
       globalThis.WebSocket = originalWS;
+      vi.useRealTimers();
     });
 
     function makeClient() {
       const fetchFn = stubFetch(() => jsonResponse({}));
       const httpClient = createClient(fetchFn as unknown as typeof fetch);
       return createGraphQLClient({ httpClient });
+    }
+
+    function sent(ws: (typeof wsInstances)[number]) {
+      return ws.send.mock.calls.map((c) => JSON.parse(c[0] as string));
     }
 
     it("connects with correct URL and graphql-transport-ws protocol", () => {
@@ -501,6 +509,217 @@ describe("GraphQLClient", () => {
         payload: { data: "nope" },
       });
       expect(onData).not.toHaveBeenCalled();
+    });
+
+    it("answers a server ping with a pong carrying its payload", () => {
+      const client = makeClient();
+      client.subscribe("subscription { x }", undefined, { onData: () => {} });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+
+      ws.triggerMessage({ type: "ping" });
+      ws.triggerMessage({ type: "connection_ack" });
+      ws.triggerMessage({ type: "ping", payload: { at: 1 } });
+
+      const pongs = sent(ws).filter((m) => m.type === "pong");
+      expect(pongs).toEqual([
+        { type: "pong" },
+        { type: "pong", payload: { at: 1 } },
+      ]);
+    });
+
+    it("reports a close the server makes before the ack, with its code and reason", () => {
+      const client = makeClient();
+      const onError = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+
+      ws.triggerClose(4403, "Forbidden");
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0].message).toContain("4403");
+      expect(onError.mock.calls[0][0].message).toContain("Forbidden");
+    });
+
+    it("reports a normal closure the client did not ask for", () => {
+      const client = makeClient();
+      const onError = vi.fn();
+      const onComplete = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+        onComplete,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+
+      ws.triggerClose(1000);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0].message).toContain("1000");
+      expect(onComplete).not.toHaveBeenCalled();
+    });
+
+    it("reports a dropped connection once, not again at the close that follows", () => {
+      const client = makeClient();
+      const onError = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+
+      ws.triggerError();
+      ws.triggerClose(1006);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not report the close that a completed subscription asks for", () => {
+      const client = makeClient();
+      const onError = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+      const subId = sent(ws)[1].id;
+
+      ws.triggerMessage({ id: subId, type: "complete" });
+      ws.triggerClose(1005);
+
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("unsubscribe completes the operation and closes normally, unreported", () => {
+      const client = makeClient();
+      const onError = vi.fn();
+      const sub = client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+      const subId = sent(ws)[1].id;
+
+      sub.unsubscribe();
+      ws.triggerClose(1000);
+
+      expect(sent(ws)[2]).toEqual({ id: subId, type: "complete" });
+      expect(ws.close).toHaveBeenCalledWith(1000);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("unsubscribe before the ack sends nothing and closes", () => {
+      const client = makeClient();
+      const sub = client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+      });
+      const ws = wsInstances[0];
+
+      sub.unsubscribe();
+
+      expect(ws.send).not.toHaveBeenCalled();
+      expect(ws.close).toHaveBeenCalledWith(1000);
+    });
+
+    it("reports the lost connection when its ping goes unanswered", () => {
+      vi.useFakeTimers();
+      const client = makeClient();
+      const onError = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+
+      vi.advanceTimersByTime(45_000);
+      expect(sent(ws).at(-1)).toEqual({ type: "ping" });
+      expect(onError).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(15_000);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0][0].message).toContain("ping");
+      expect(ws.close).toHaveBeenCalled();
+
+      ws.triggerClose(1006);
+      expect(onError).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the subscription when its ping is answered", () => {
+      vi.useFakeTimers();
+      const client = makeClient();
+      const onError = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+
+      for (let i = 0; i < 5; i++) {
+        vi.advanceTimersByTime(45_000);
+        ws.triggerMessage({ type: "pong" });
+      }
+      vi.advanceTimersByTime(15_000);
+
+      expect(onError).not.toHaveBeenCalled();
+      expect(ws.close).not.toHaveBeenCalled();
+    });
+
+    it("sends no ping while the server's own pings keep arriving", () => {
+      vi.useFakeTimers();
+      const client = makeClient();
+      const onError = vi.fn();
+      client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+
+      for (let i = 0; i < 10; i++) {
+        vi.advanceTimersByTime(30_000);
+        ws.triggerMessage({ type: "ping" });
+      }
+
+      expect(sent(ws).some((m) => m.type === "ping")).toBe(false);
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it("stops its keep-alive once unsubscribed", () => {
+      vi.useFakeTimers();
+      const client = makeClient();
+      const onError = vi.fn();
+      const sub = client.subscribe("subscription { x }", undefined, {
+        onData: () => {},
+        onError,
+      });
+      const ws = wsInstances[0];
+      ws.triggerOpen();
+      ws.triggerMessage({ type: "connection_ack" });
+
+      sub.unsubscribe();
+      const before = ws.send.mock.calls.length;
+      vi.advanceTimersByTime(120_000);
+
+      expect(ws.send.mock.calls.length).toBe(before);
+      expect(onError).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 });

@@ -31,6 +31,9 @@ export interface SubscriptionHandle {
 
 // Client
 
+const IDLE_BEFORE_PING_MS = 45_000;
+const PONG_TIMEOUT_MS = 15_000;
+
 export class GraphQLClient {
   #config: GraphQLClientConfig;
   #httpClient: HttpClient;
@@ -80,16 +83,63 @@ export class GraphQLClient {
 
     const ws = new WebSocket(wsUrl, "graphql-transport-ws");
     let unsubscribed = false;
+    let subId: string | null = null;
+    let keepAlive: ReturnType<typeof setTimeout> | undefined;
+
+    // The subscription ends once, whichever way it ends, so the app hears
+    // about it once and nothing reaches it afterward.
+    const end = (err?: Error) => {
+      clearTimeout(keepAlive);
+      if (unsubscribed) return;
+      unsubscribed = true;
+      if (err) handlers.onError?.(err);
+    };
+
+    // Any message proves the connection alive. After a silence the client
+    // pings, and a further silence means the connection is gone. A pong is
+    // not required: earlier servers do not answer pings, but they ping
+    // every 30 seconds while a subscription runs.
+    const awaitTraffic = (pinged = false) => {
+      clearTimeout(keepAlive);
+      keepAlive = setTimeout(
+        () => {
+          if (!pinged) {
+            ws.send(JSON.stringify({ type: "ping" }));
+            awaitTraffic(true);
+            return;
+          }
+          end(
+            new Error(
+              "WebSocket connection lost: the server did not answer a ping",
+            ),
+          );
+          ws.close();
+        },
+        pinged ? PONG_TIMEOUT_MS : IDLE_BEFORE_PING_MS,
+      );
+    };
 
     ws.onopen = () => {
       const payload = this.#config.token
         ? { authorization: `Bearer ${this.#config.token}` }
         : {};
       ws.send(JSON.stringify({ type: "connection_init", payload }));
-      let subId: string | null = null;
+      awaitTraffic();
 
       ws.onmessage = (e: MessageEvent) => {
+        if (unsubscribed) return;
+        awaitTraffic();
         const msg = JSON.parse(e.data);
+        if (msg.type === "ping") {
+          ws.send(
+            JSON.stringify(
+              msg.payload === undefined
+                ? { type: "pong" }
+                : { type: "pong", payload: msg.payload },
+            ),
+          );
+          return;
+        }
         if (msg.type === "connection_ack") {
           subId =
             (typeof crypto !== "undefined" && crypto.randomUUID?.()) ||
@@ -104,28 +154,37 @@ export class GraphQLClient {
           return;
         }
         if (!subId || msg.id !== subId) return;
-        if (msg.type === "next" && !unsubscribed)
-          handlers.onData(msg.payload.data as T);
-        else if (msg.type === "error" && !unsubscribed)
+        if (msg.type === "next") handlers.onData(msg.payload.data as T);
+        else if (msg.type === "error")
           handlers.onError?.(new Error(JSON.stringify(msg.payload)));
         else if (msg.type === "complete") {
-          if (!unsubscribed) handlers.onComplete?.();
-          unsubscribed = true;
+          handlers.onComplete?.();
+          end();
           ws.close();
         }
       };
     };
 
-    ws.onerror = (e: Event) => {
-      if (!unsubscribed) {
-        handlers.onError?.(new Error("WebSocket error"));
-      }
-    };
+    // An error event is always followed by a close event, which then has
+    // nothing to add.
+    ws.onerror = () => end(new Error("WebSocket error"));
+
+    ws.onclose = (e: CloseEvent) =>
+      end(
+        new Error(
+          `WebSocket closed with code ${e.code}` +
+            (e.reason ? `: ${e.reason}` : ""),
+        ),
+      );
 
     return {
       unsubscribe: () => {
-        unsubscribed = true;
-        ws.close();
+        // Before the ack the socket may still be connecting, where a send
+        // throws, and the server holds no operation to complete.
+        if (subId && !unsubscribed)
+          ws.send(JSON.stringify({ id: subId, type: "complete" }));
+        end();
+        ws.close(1000);
       },
     };
   }
