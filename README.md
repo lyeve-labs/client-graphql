@@ -100,6 +100,11 @@ const sub = gql.subscribe<{
 
 The subscription root also carries `schemaChanged { schema action timestamp }`.
 
+A subscription that ends without a `complete` from the server calls `onError`
+once: a close the app did not ask for (with its code and reason), a transport
+error, or a connection that answers nothing for 60 seconds. Nothing reaches the
+handlers after that, and the app subscribes again to resume.
+
 ## API
 
 | Method                                            | Description                                                                  |
