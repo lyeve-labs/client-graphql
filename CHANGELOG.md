@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-10-20
+
+### Fixed
+
+- A subscription that the server ends is reported. Any close the app did not
+  ask for reaches `onError` with its close code and reason, and a socket that
+  goes silent is pinged and reported as lost when nothing answers within 60
+  seconds. A server `ping` is answered with a `pong` carrying its payload, and
+  `unsubscribe` sends `complete` and closes with code 1000.
+
 ## [0.1.9] - 2026-10-01
 
 ### Fixed
